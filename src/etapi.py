@@ -284,6 +284,60 @@ class ExactTargetAPI:
         else:
             return resp.Results[0].Object
 
+    def get_email_receivers(self, jobid):
+        # retrieve all users who received this email
+        rr = self.client.factory.create('RetrieveRequest')
+        rr.ObjectType = 'SentEvent'
+        rr.Properties = ['SendID', 'EventDate', 'SubscriberKey']
+        rr.Options = None
+
+        sfp = self.client.factory.create('SimpleFilterPart')
+        sfp.Property = 'SendID'
+        sfp.SimpleOperator = 'equals'
+        sfp.Value = jobid
+        rr.Filter = sfp
+
+        try:
+            resp = self.client.service.Retrieve(rr)
+        except suds.WebFault as e:
+            raise SoapError(str(e))
+
+        if resp.OverallStatus != 'OK':
+            self.log(resp, logging.ERROR)
+            raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
+
+        try:
+            return resp.Results[0]
+        except AttributeError:
+            pass
+
+    def get_email_stats(self, jobid):
+        # retrieve stats on a single email send
+        rr = self.client.factory.create('RetrieveRequest')
+        rr.ObjectType = 'Send'
+        rr.Properties = ['SentDate', 'UniqueOpens', 'NumberSent', 'NumberDelivered', 'HardBounces', 'SoftBounces']
+        rr.Options = None
+
+        sfp = self.client.factory.create('SimpleFilterPart')
+        sfp.Property = 'ID'
+        sfp.SimpleOperator = 'equals'
+        sfp.Value = jobid
+        rr.Filter = sfp
+
+        try:
+            resp = self.client.service.Retrieve(rr)
+        except suds.WebFault as e:
+            raise SoapError(str(e))
+
+        if resp.OverallStatus != 'OK':
+            self.log(resp, logging.ERROR)
+            raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
+
+        try:
+            return resp.Results[0]
+        except AttributeError:
+            pass
+
 
 class ExactTargetError(Exception):
     def __init__(self, request_id, message):
