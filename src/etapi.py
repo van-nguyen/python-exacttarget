@@ -1,6 +1,7 @@
 import uuid
 import logging
 import os
+import sys
 
 import suds
 from suds.client import Client
@@ -36,12 +37,18 @@ class ExactTargetAPI:
         fh.setFormatter(formatter)
         self.logger.addHandler(fh)
 
+    def log(self, msg, level=logging.DEBUG):
+        if sys.stdout.fileno() is not None and os.isatty(sys.stdout.fileno()):
+            print msg
+        else:
+            self.logger.log(level, msg)
+
     def init_client(self):
         try:
             # create the SOAP client
             self.client = Client(self.schema_url)
         except URLError as e:
-            self.logger.error(e)
+            self.log(e, logging.CRITICAL)
             return None
 
         # add WS-Security token
@@ -100,7 +107,7 @@ class ExactTargetAPI:
             raise SoapError(str(e))
 
         if resp.OverallStatus != 'OK':
-            self.logger.error(resp)
+            self.log(resp, logging.ERROR)
             raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
 
         return resp.RequestID
@@ -142,7 +149,7 @@ class ExactTargetAPI:
             raise SoapError(str(e))
 
         if resp.OverallStatus != 'OK':
-            self.logger.error(resp)
+            self.log(resp, logging.ERROR)
             raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
 
         return True
@@ -167,7 +174,7 @@ class ExactTargetAPI:
             raise SoapError(str(e))
 
         if resp.OverallStatus != 'OK':
-            self.logger.error(resp)
+            self.log(resp, logging.ERROR)
             raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
 
         try:
@@ -216,7 +223,7 @@ class ExactTargetAPI:
             raise SoapError(str(e))
 
         if resp.OverallStatus != 'OK':
-            self.logger.error(resp)
+            self.log(resp, logging.ERROR)
             raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
 
         return s
@@ -241,7 +248,7 @@ class ExactTargetAPI:
             raise SoapError(str(e))
 
         if resp.OverallStatus != 'OK':
-            self.logger.error(resp)
+            self.log(resp, logging.ERROR)
             raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
 
         try:
@@ -272,7 +279,7 @@ class ExactTargetAPI:
             raise SoapError(str(e))
 
         if resp.OverallStatus != 'OK':
-            self.logger.error(resp)
+            self.log(resp, logging.ERROR)
             raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
         else:
             return resp.Results[0].Object
@@ -284,7 +291,7 @@ class ExactTargetError(Exception):
         self.request_id = request_id
 
     def __unicode__(self):
-        return "%s: %s" % (self.request_id, super(Exception, self).__unicode__())
+        return "Request %s failed with message '%s'" % (self.request_id, self.message)
 
     def __str__(self):
         return str(self.__unicode__())
