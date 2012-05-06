@@ -58,16 +58,12 @@ class ExactTargetAPI:
         self.client.set_options(wsse=security)
         return self.client
 
-    def add_to_triggered_send_definition(self, tsd_key, email, cartkey, name,
-                                         email_num, attribs=None):
+    def add_to_triggered_send_definition(self, tsd_key, email, subscriberkey,
+                                         attribs=None):
         # create a subscriber object
         s = self.client.factory.create('Subscriber')
         s.EmailAddress = email
-        s.SubscriberKey = cartkey
-        s.Attributes = [
-            {'Name':'Name', 'Value':name},
-            {'Name':'EmailNum', 'Value':email_num},
-        ]
+        s.SubscriberKey = subscriberkey
 
         # add extra attributes to data extension
         if attribs is not None:
