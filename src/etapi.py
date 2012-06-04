@@ -10,9 +10,10 @@ from urllib2 import URLError
 
 DEFAULT_EVURL = 'https://webservice.exacttarget.com/etframework.wsdl'
 
+def chunks(l, n):
+    return [l[i:i+n] for i in xrange(0, len(l), n)]
 
 class ExactTargetAPI:
-
     def __init__(self, username, password, schema_url=None, log_path=None):
         self.username = username
         self.password = password
@@ -114,41 +115,35 @@ class ExactTargetAPI:
         p.Value = value
         return p
 
-    def add_to_data_extension(self, de_key, props):
+    def add_to_data_extension(self, de_key, rows):
+        opts = []
+        
         # convert props to WSDL format
-        apiprops = []
-        for k in props.keys():
-            apiprops.append(self._create_api_property(k, props[k]))
-
-        # create DE and map in our properties array
-        deo = self.client.factory.create('DataExtensionObject')
-        innerprops = []
-        for p in apiprops:
-            innerprops.append(p)
-            deo.Properties = [{'Property': innerprops}]
-            deo.CustomerKey = de_key
-
+        for props in rows:
+            apiprops = []
+            for k in props.keys():
+                apiprops.append(self._create_api_property(k, props[k]))
+    
+            # create DE and map in our properties array
+            deo = self.client.factory.create('DataExtensionObject')
+            innerprops = []
+            for p in apiprops:
+                innerprops.append(p)
+                deo.Properties = [{'Property': innerprops}]
+                deo.CustomerKey = de_key
+            
+            opts.append(deo)
+            
         # createoptions for insertion
         co = self.client.factory.create('CreateOptions')
-        co.RequestType = 'Synchronous'
+        co.RequestType = 'Asynchronous'
         co.QueuePriority = 'Medium'
         so = self.client.factory.create('SaveOption')
         so.PropertyName = '*'
         so.SaveAction = 'UpdateAdd'
         co.SaveOptions = [so]
 
-        opts = [deo]
-
-        try:
-            resp = self.client.service.Create(co, opts)
-        except suds.WebFault as e:
-            raise SoapError(str(e))
-
-        if resp.OverallStatus != 'OK':
-            self.log(resp, logging.ERROR)
-            raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
-
-        return True
+        print self.client.service.Create(co, opts)
 
     def get_subscriber(self, key):
         # retrieve a subscriber
@@ -179,7 +174,111 @@ class ExactTargetAPI:
             pass
 
         return None
+    
+    def create_object(self, objtype):
+        obj = self.client.factory.create(objtype)
+        
+        for p in obj.__keylist__:
+            obj[p] = None
+        
+        return obj
+    
+    def _deo_to_list(self, resp):
+        results = []
+        
+        if 'Results' not in resp:
+            return None
+        
+        for r in resp.Results:
+            row = {}
+            
+            for p in r.Properties.Property:
+                row[p.Name] = p.Value
+                
+            results.append(row)
+            
+        return results
+    
+    def get_data_extension(self, de_key, cols, start_date=None, start_date_field=None, more_data=True):
+        rr = self.client.factory.create('RetrieveRequest')
+        rr.ObjectType = 'DataExtensionObject[' + de_key + ']'
+        rr.Properties = cols
+        rr.Options = None
+        
+        if start_date is not None and start_date_field is not None:
+            sfp = self.client.factory.create('SimpleFilterPart')
+            sfp.Property = start_date_field
+            sfp.SimpleOperator = 'greaterThanOrEqual'
+            sfp.Value = start_date
+            rr.Filter = sfp
+        
+        try:
+            resp = self.client.service.Retrieve(rr)
+            yield self._deo_to_list(resp)
+        except suds.WebFault as e:
+            raise SoapError(str(e))
 
+        if more_data:
+            while resp.OverallStatus == 'MoreDataAvailable':
+                rr = self.client.factory.create('RetrieveRequest')
+                rr.ContinueRequest = resp.RequestID
+                
+                try:
+                    resp = self.client.service.Retrieve(rr)
+                    yield self._deo_to_list(resp)
+                except suds.WebFault as e:
+                    raise SoapError(str(e))
+
+    def create_data_extension_field(self, name, field_type, is_primary=False, is_nillable=False, length=0, default=None):
+        field = self.create_object('DataExtensionField')
+        field.Name = name
+        field.FieldType = field_type
+        field.IsPrimaryKey = is_primary
+        field.IsRequired = not is_nillable
+        field.IsNillable = is_nillable
+        field.DefaultValue = default
+        
+        if length > 0:
+            field.MaxLength = length
+        
+        return field
+    
+    def create_data_extension(self, de_name, de_key, de_fields, sender_field=None, description=None, folder=0):
+        de = self.create_object('DataExtension')
+        de.Name = de_name
+        de.Description = description
+        de.CustomerKey = de_key
+        de.IsSendable = False
+        
+        if folder > 0:
+            de.CategoryID = folder
+        
+        if sender_field is not None:
+            de.IsSendable = True
+            de.SendableDataExtensionField = sender_field
+            de.SendableSubscriberField = self.create_object('Attribute')
+            de.SendableSubscriberField.Name = "Email Address"
+            de.SendableSubscriberField.Value = ""
+        
+        # arrays of self.create_data_extension_field
+        de.Fields = {'Field': de_fields}
+
+        co = self.create_object('CreateOptions')
+        co.SaveOptions = [self.create_object('SaveOption')]
+
+        objs = [de,]
+
+        try:
+            resp = self.client.service.Create(co, objs)
+        except suds.WebFault as e:
+            raise SoapError(str(e))
+
+        if resp.OverallStatus != 'OK':
+            self.log(resp, logging.ERROR)
+            raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
+
+        return de
+        
     def create_subscriber(self, email, firstname, lastname, listname=None):
         # create subscriber object
         s = self.client.factory.create('Subscriber')
@@ -194,10 +293,10 @@ class ExactTargetAPI:
         ]
 
         # add the subscriber to a list if supplied
-        if listname != None:
+        if listname is not None:
             l = self.get_subscriber_list(listname)
 
-            if l != None:
+            if l is not None:
                 sl = self.client.factory.create('SubscriberList')
                 sl.ID = l.ID
                 sl.Status = 'Active'
@@ -258,19 +357,25 @@ class ExactTargetAPI:
         else:
             return None
 
-    def create_subscriber_list(self, listname):
+    def create_subscriber_list(self, listname, description="", folder=0, async=False):
         # create a subscriber list
-        l = self.client.factory.create('List')
+        l = self.create_object('List')
+        
+        if folder > 0:
+            l.Category = folder
+        
         l.ListName = listname
-        l.Description = 'Auto-created by Boomerang'
-        l.Type = 'Private'
-        l.ListClassification = 'ExactTargetList'
-
-        co = {}
-        objs = [l]
+        l.Description = description
+        l.CustomerKey = listname
+        
+        if async:
+            co = self.create_object('CreateOptions')
+            co.RequestType = 'Asynchronous'
+        else:
+            co = {}
 
         try:
-            resp = self.client.service.Create(co, objs)
+            resp = self.client.service.Create(co, [l])
         except suds.WebFault as e:
             raise SoapError(str(e))
 
@@ -334,6 +439,20 @@ class ExactTargetAPI:
         except AttributeError:
             pass
 
+    def run_import(self, key):
+        im = self.create_object('ImportDefinition')
+        im.CustomerKey = key
+        
+        objs = {'Definition': [im,]}
+        
+        try:
+            resp = self.client.service.Perform(self.create_object('PerformOptions'), 'start', objs)
+        except suds.WebFault as e:
+            raise SoapError(str(e))
+
+        if resp.OverallStatus != 'OK':
+            self.log(resp, logging.ERROR)
+            raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
 
 class ExactTargetError(Exception):
     def __init__(self, request_id, message):
