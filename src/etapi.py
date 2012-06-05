@@ -10,9 +10,6 @@ from urllib2 import URLError
 
 DEFAULT_EVURL = 'https://webservice.exacttarget.com/etframework.wsdl'
 
-def chunks(l, n):
-    return [l[i:i+n] for i in xrange(0, len(l), n)]
-
 class ExactTargetAPI:
     def __init__(self, username, password, schema_url=None, log_path=None):
         self.username = username
@@ -175,11 +172,13 @@ class ExactTargetAPI:
 
         return None
     
-    def create_object(self, objtype):
+    def create(self, objtype, key=None):
         obj = self.client.factory.create(objtype)
         
         for p in obj.__keylist__:
             obj[p] = None
+        
+        obj.CustomerKey = key
         
         return obj
     
@@ -228,48 +227,76 @@ class ExactTargetAPI:
                     yield self._deo_to_list(resp)
                 except suds.WebFault as e:
                     raise SoapError(str(e))
-
-    def create_data_extension_field(self, name, field_type, is_primary=False, is_nillable=False, length=0, default=None):
-        field = self.create_object('DataExtensionField')
-        field.Name = name
-        field.FieldType = field_type
-        field.IsPrimaryKey = is_primary
-        field.IsRequired = not is_nillable
-        field.IsNillable = is_nillable
-        field.DefaultValue = default
+                
+    def get_object(self, objtype, props):
+        rr = self.create('RetrieveRequest')
+        rr.ObjectType = objtype
+        rr.Properties = props
         
-        if length > 0:
-            field.MaxLength = length
+        try:
+            resp = self.client.service.Retrieve(rr)
+        except suds.WebFault as e:
+            raise SoapError(str(e))
         
-        return field
+        if resp.OverallStatus != 'OK':
+            self.log(resp, logging.ERROR)
+            raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
+        
+        return resp.Results
     
-    def create_data_extension(self, de_name, de_key, de_fields, sender_field=None, description=None, folder=0):
-        de = self.create_object('DataExtension')
-        de.Name = de_name
-        de.Description = description
-        de.CustomerKey = de_key
-        de.IsSendable = False
+    def strip_object(self, obj):
+        id_list = ['ObjectID', 'ID', 'CustomerKey']
         
-        if folder > 0:
-            de.CategoryID = folder
-        
-        if sender_field is not None:
-            de.IsSendable = True
-            de.SendableDataExtensionField = sender_field
-            de.SendableSubscriberField = self.create_object('Attribute')
-            de.SendableSubscriberField.Name = "Email Address"
-            de.SendableSubscriberField.Value = ""
-        
-        # arrays of self.create_data_extension_field
-        de.Fields = {'Field': de_fields}
-
-        co = self.create_object('CreateOptions')
-        co.SaveOptions = [self.create_object('SaveOption')]
-
-        objs = [de,]
+        for p in obj.__keylist__:
+                if p not in id_list:
+                    obj[p] = None
+                    
+        return obj
+    
+    def delete_objects(self, objs):
+        for o in objs:
+            self.strip_object(o)
 
         try:
-            resp = self.client.service.Create(co, objs)
+            resp = self.client.service.Delete(None, objs)
+        except suds.WebFault as e:
+            raise SoapError(str(e))
+        
+        if resp.OverallStatus != 'OK':
+            self.log(resp, logging.ERROR)
+            raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
+        
+        return True
+    
+    def update_object(self, obj):
+        try:
+            resp = self.client.service.Update(None, obj)
+        except suds.WebFault as e:
+            raise SoapError(str(e))
+        
+        if resp.OverallStatus != 'OK':
+            self.log(resp, logging.ERROR)
+            raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
+        
+        return True
+    
+    def create_email(self, name, subject, is_html, body, folder=None):
+        email = self.create('Email')
+        email.Name = name
+        email.Subject = subject
+        email.Folder = folder
+        email.CharacterSet = 'UTF-8'
+        
+        if is_html:
+            email.EmailType = 'HTML'
+            email.HTMLBody = body
+            email.IsHTMLPaste = True
+        else:
+            email.EmailType = 'Text Only'
+            email.TextBody = body
+            
+        try:
+            resp = self.client.service.Create(None, [email])
         except suds.WebFault as e:
             raise SoapError(str(e))
 
@@ -277,7 +304,89 @@ class ExactTargetAPI:
             self.log(resp, logging.ERROR)
             raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
 
-        return de
+        ret_obj = resp.Results[0].Object
+        ret_obj.ID = resp.Results[0].NewID
+        return ret_obj
+    
+    def create_tsd(self, name, key, email, de=None, et_list=None, is_transactional=False, add_subscribers=True):
+        tsd = self.create('TriggeredSendDefinition')
+        tsd.Name = name
+        tsd.CustomerKey = key
+        tsd.Email = self.strip_object(email)
+        tsd.SendClassification = self.create('SendClassification')
+        tsd.SendClassification.CustomerKey = 'Default Commercial'
+        
+        if is_transactional:
+            tsd.SendClassification.CustomerKey = 'Default Transactional'
+        
+        tsd.IsMultipart = True
+        
+        if et_list:
+            tsd.List = self.strip_object(et_list)
+            tsd.AutoAddSubscribers = add_subscribers
+            
+        tsd.SendSourceDataExtension = self.strip_object(de)
+        
+        try:
+            resp = self.client.service.Create(None, [tsd])
+        except suds.WebFault as e:
+            raise SoapError(str(e))
+
+        if resp.OverallStatus != 'OK':
+            self.log(resp, logging.ERROR)
+            raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
+        
+        return resp.Results[0].Object
+    
+    def create_data_extension_field(self, name, field_type, is_primary=False, is_nillable=False, length=None, default=None):
+        field = self.create('DataExtensionField')
+        field.Name = name
+        field.FieldType = field_type
+        field.IsPrimaryKey = is_primary
+        field.IsRequired = not is_nillable
+        field.IsNillable = is_nillable
+        field.MaxLength = length
+        field.DefaultValue = default
+        
+        return field
+    
+    def create_data_extension(self, name, key, de_fields, sender_field=None, description=None, folder=None, template=None):
+        de = self.create('DataExtension')
+        de.Name = name
+        de.Description = description
+        de.CustomerKey = key
+        de.IsSendable = False
+        
+        # TriggeredSendDataExtension
+        if template is not None:
+            for o in self.get_object('DataExtensionTemplate', ['Name', 'ObjectID']):
+                if o.Name == template:
+                    de.Template = o
+                    sender_field = 'SubscriberKey'
+                    break
+        
+        de.CategoryID = folder
+        
+        if sender_field is not None:
+            de.IsSendable = True
+            de.SendableDataExtensionField = sender_field
+            de.SendableSubscriberField = self.create('Attribute')
+            de.SendableSubscriberField.Name = "Subscriber Key"
+            de.SendableSubscriberField.Value = ""
+        
+        # arrays of self.create_data_extension_field
+        de.Fields = {'Field': de_fields}
+
+        try:
+            resp = self.client.service.Create(None, [de])
+        except suds.WebFault as e:
+            raise SoapError(str(e))
+
+        if resp.OverallStatus != 'OK':
+            self.log(resp, logging.ERROR)
+            raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
+
+        return resp.Results[0].Object
         
     def create_subscriber(self, email, firstname, lastname, listname=None):
         # create subscriber object
@@ -359,7 +468,7 @@ class ExactTargetAPI:
 
     def create_subscriber_list(self, listname, description="", folder=0, async=False):
         # create a subscriber list
-        l = self.create_object('List')
+        l = self.create('List')
         
         if folder > 0:
             l.Category = folder
@@ -369,7 +478,7 @@ class ExactTargetAPI:
         l.CustomerKey = listname
         
         if async:
-            co = self.create_object('CreateOptions')
+            co = self.create('CreateOptions')
             co.RequestType = 'Asynchronous'
         else:
             co = {}
@@ -439,14 +548,22 @@ class ExactTargetAPI:
         except AttributeError:
             pass
 
+    def start_tsd(self, tsd):
+        tsd.TriggeredSendStatus = 'Active'
+        self.update_object(tsd)
+    
+    def stop_tsd(self, tsd):
+        tsd.TriggeredSendStatus = 'Inactive'
+        self.update_object(tsd)
+
     def run_import(self, key):
-        im = self.create_object('ImportDefinition')
+        im = self.create('ImportDefinition')
         im.CustomerKey = key
         
         objs = {'Definition': [im,]}
         
         try:
-            resp = self.client.service.Perform(self.create_object('PerformOptions'), 'start', objs)
+            resp = self.client.service.Perform(self.create('PerformOptions'), 'start', objs)
         except suds.WebFault as e:
             raise SoapError(str(e))
 
