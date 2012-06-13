@@ -178,7 +178,8 @@ class ExactTargetAPI:
         for p in obj.__keylist__:
             obj[p] = None
         
-        obj.CustomerKey = key
+        if key is not None:
+            obj.CustomerKey = key
         
         return obj
     
@@ -466,25 +467,53 @@ class ExactTargetAPI:
         else:
             return None
 
-    def create_subscriber_list(self, listname, description="", folder=0, async=False):
-        # create a subscriber list
-        l = self.create('List')
+    def add_subscribers_to_list(self, subs, async=True):
+        sublist = self.create('SubscriberList')
+        sublist.Action = 'create'
         
-        if folder > 0:
-            l.Category = folder
+        objs = []
         
-        l.ListName = listname
-        l.Description = description
-        l.CustomerKey = listname
+        for subscribers in subs:
+            sublist.ID = subscribers[0]
+            
+            for email in subscribers[1]:
+                sub = self.create('Subscriber')
+                sub.SubscriberKey = email
+                sub.EmailAddress = email
+                sub.Lists = [sublist]
+                objs.append(sub)
         
+        uo = self.create('UpdateOptions')
         if async:
-            co = self.create('CreateOptions')
-            co.RequestType = 'Asynchronous'
-        else:
-            co = {}
+            uo.RequestType = 'Asynchronous'
+        
+        for obj in chunks(objs, 400):
+            try:
+                resp = self.client.service.Create(None, obj)
+            except suds.WebFault as e:
+                raise SoapError(str(e))
+            
+            if resp.OverallStatus != 'OK':
+                self.log(resp, logging.ERROR)
+                raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
+
+    def create_subscriber_lists(self, lists, folder=0):
+        objs = []
+        
+        for li in lists:
+            l = self.create('List')
+            
+            if folder > 0:
+                l.Category = folder
+            
+            l.CustomerKey = li['key']
+            l.ListName = li['name']
+            l.Description = li['description']
+            
+            objs.append(l)
 
         try:
-            resp = self.client.service.Create(co, [l])
+            resp = self.client.service.Create(None, objs)
         except suds.WebFault as e:
             raise SoapError(str(e))
 
@@ -492,7 +521,11 @@ class ExactTargetAPI:
             self.log(resp, logging.ERROR)
             raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
         else:
-            return resp.Results[0].Object
+            list_obs = {}
+            for r in resp.Results:
+                list_obs[r.Object.CustomerKey] = r.NewID
+            
+            return list_obs
 
     def get_email_receivers(self, jobid):
         # retrieve all users who received this email
@@ -585,3 +618,7 @@ class ExactTargetError(Exception):
 
 class SoapError(Exception):
     pass
+
+# http://stackoverflow.com/a/1751478/271768
+def chunks(l, n):
+    return [l[i:i+n] for i in range(0, len(l), n)]
