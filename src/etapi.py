@@ -185,6 +185,9 @@ class ExactTargetAPI:
             obj[p] = None
         
         if key is not None:
+            if objtype == 'Subscriber':
+                obj.SubscriberKey = key
+            else:
             obj.CustomerKey = key
         
         return obj
@@ -239,11 +242,18 @@ class ExactTargetAPI:
                         continue
                     break
                 
-    def get_object(self, objtype, props):
+    def get_object(self, objtype, props, filters=None):
         rr = self.create('RetrieveRequest')
         rr.ObjectType = objtype
         rr.Properties = props
         rr.ClientIDs  = [self.client_id]
+
+        if filters is not None:
+            sfp = self.client.factory.create('SimpleFilterPart')
+            sfp.Property = filters[0]
+            sfp.SimpleOperator = 'equals'
+            sfp.Value = filters[1]
+            rr.Filter = sfp
 
         try:
             resp = self.client.service.Retrieve(rr)
@@ -254,10 +264,13 @@ class ExactTargetAPI:
             self.log(resp, logging.ERROR)
             raise ExactTargetError(resp.RequestID, resp.Results[0].StatusMessage)
         
+        if hasattr(resp, 'Results'):
         return resp.Results
-    
+        else:
+            return []
+
     def strip_object(self, obj):
-        id_list = ['ObjectID', 'ID', 'CustomerKey']
+        id_list = ['ObjectID', 'ID', 'CustomerKey', 'SubscriberKey']
         
         for p in obj.__keylist__:
                 if p not in id_list:
@@ -269,8 +282,12 @@ class ExactTargetAPI:
         for o in objs:
             self.strip_object(o)
 
+        do = self.client.factory.create('DeleteOptions')
+        do.RequestType = 'Asynchronous'
+        do.QueuePriority = 'High'
+
         try:
-            resp = self.client.service.Delete(None, objs)
+            resp = self.client.service.Delete(do, objs)
         except suds.WebFault as e:
             raise SoapError(str(e))
         
@@ -295,10 +312,12 @@ class ExactTargetAPI:
     def create_email(self, name, subject, is_html, body, folder=None):
         email = self.create('Email')
         email.Name = name
+        email.CustomerKey = name
         email.Subject = subject
-        email.Folder = folder
+        email.CategoryID = folder
         email.CharacterSet = 'UTF-8'
-        
+        email.Client = self.client_id
+
         if is_html:
             email.EmailType = 'HTML'
             email.HTMLBody = body
@@ -308,6 +327,12 @@ class ExactTargetAPI:
             email.TextBody = body
             
         try:
+            current_emails = self.get_object('Email', ['Name', 'ID'], ['Name', name])
+
+            if (len(current_emails) > 0):
+                email.ID = current_emails[0].ID
+                resp = self.client.service.Update(None, [email])
+            else:
             resp = self.client.service.Create(None, [email])
         except suds.WebFault as e:
             raise SoapError(str(e))
@@ -361,7 +386,40 @@ class ExactTargetAPI:
         field.DefaultValue = default
         
         return field
-    
+
+    def create_send(self, name, list, email, folder=None, sender=None, delivery=None):
+        esd = self.create('EmailSendDefinition')
+        esd.Name = name
+
+        sdl = self.create('SendDefinitionList')
+        esd.SendDefinitionList = [sdl]
+
+        if folder is not None:
+            esd.CategoryID = folder
+
+        if sender is not None:
+            esd.SenderProfile = self.create('SenderProfile')
+            esd.SenderProfile.Name = sender
+
+        if delivery is not None:
+            esd.DeliveryProfile = self.create('DeliveryProfile')
+            esd.DeliveryProfile.Name = delivery
+
+    def create_portfolio(self, url, folder=None, source=None):
+        p = self.create('Portfolio')
+        p.Source = self.create('ResourceSpecification')
+
+        if source is not None:
+            p.Source.URN = source
+        else:
+            p.Source.URN = url
+
+        if folder is not None:
+            p.CategoryID = folder
+
+        resp = self.client.service.Create(None, [p])
+        return resp.OverallStatus == 'OK'
+
     def create_data_extension(self, name, key, de_fields, sender_field=None, description=None, folder=None, template=None):
         de = self.create('DataExtension')
         de.Name = name
@@ -598,7 +656,40 @@ class ExactTargetAPI:
         sfp.SimpleOperator = operator
         sfp.Value = value
         return sfp
-    
+
+    def get_contents(self, dir, folder=None):
+        for c in self.get_object('ContentArea', ['Name', 'Content'], ['CategoryID', folder]):
+            f = open(".".join(["/".join([dir, c.Name]), "html"]), "wb")
+            f.write(c.Content.encode('utf-8'))
+            f.close()
+
+    def delete_subscribers(self, subs):
+        subscribers = []
+
+        for s in subs:
+            subscribers.append(self.create('Subscriber', s))
+
+        self.delete_objects(subscribers)
+
+    def create_contents(self, namespace, segment, filepath, folder=None):
+        ca = self.create('ContentArea')
+        ca.CategoryID = folder
+        with open(filepath, 'r') as f:
+            ca.Content = f.read().decode('utf-8')
+
+        ca.Name = namespace + '-' + segment + '-' + os.path.splitext(os.path.basename(filepath))[0]
+        ca.CustomerKey = ca.Name
+        ca.Layout = "HTMLWrapped"
+
+        print ca.Name
+        current_contents = self.get_object('ContentArea', ['Name', 'ID'], ['Name', ca.Name])
+
+        if (len(current_contents) > 0):
+            ca.ID = current_contents[0].ID
+            self.client.service.Update(None, [ca])
+        else:
+            self.client.service.Create(None, [ca])
+
     def create_filter_definition(self, name, filters, key=None, description=None, operator='AND'):
         fd = self.create('FilterDefinition', key)
         fd.Name = name
