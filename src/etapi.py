@@ -2,6 +2,7 @@ import uuid
 import logging
 import os
 import sys
+import glob
 
 import suds
 from suds.client import Client
@@ -14,6 +15,7 @@ class ExactTargetAPI:
     def __init__(self, username, password, schema_url=None, log_path=None):
         self.username = username
         self.password = password
+        self.client_id = None
 
         # it's possible to provide your own modified schema
         if(schema_url):
@@ -55,6 +57,10 @@ class ExactTargetAPI:
         security.tokens.append(token)
         self.client.set_options(wsse=security)
         return self.client
+
+    def set_client_id(self, cid):
+        self.client_id = self.create('ClientID')
+        self.client_id.ID = cid
 
     def add_to_triggered_send_definition(self, tsd_key, email, subscriberkey,
                                          attribs=None):
@@ -237,7 +243,8 @@ class ExactTargetAPI:
         rr = self.create('RetrieveRequest')
         rr.ObjectType = objtype
         rr.Properties = props
-        
+        rr.ClientIDs  = [self.client_id]
+
         try:
             resp = self.client.service.Retrieve(rr)
         except suds.WebFault as e:
